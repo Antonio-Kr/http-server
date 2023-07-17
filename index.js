@@ -3,10 +3,30 @@ const url = require('url');
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
+const fsPromise = require('fs/promises');
 
 const secretKey = 'mySecretKey';
 
-const data = [];
+/**
+ * @type {{
+ *  users: Array< {id: Number} >,
+ *  files: Array< {id: Number, path: String} >
+ * }}
+ */
+const data = { users: [], files: [] };
+
+async function initFileList() {
+    try {
+        const files = await fsPromise.readdir(path.join(__dirname, 'files'));
+        files.forEach((fileName) => {
+            const [fileId] = /\d+/.exec(fileName);
+            data.files.push({ id: parseInt(fileId), path: path.join(__dirname, 'files', fileName) });
+        });
+    } catch (error) {
+        console.log(error.message);
+        throw new Error(`Initialization error: ${error.message}`);
+    }
+}
 
 const METHODS = {
     GET: 'get',
@@ -36,18 +56,18 @@ const server = http.createServer(async (req, res) => {
     if (method === 'post' && urlPath === '/login') {
         return handleLogin(req, res);
     } else {
-        const authorization = req.headers.authorization;
-        if (!authorization) {
-            return sendResponse(res, 401, {
-                message: 'No authorization info',
-            });
-        }
-        const [, token] = authorization.split(' ');
-        if (!verifyJWT(token)) {
-            return sendResponse(res, 401, {
-                message: 'Invalid token',
-            });
-        }
+        // const authorization = req.headers.authorization;
+        // if (!authorization) {
+        //     return sendResponse(res, 401, {
+        //         message: 'No authorization info',
+        //     });
+        // }
+        // const [, token] = authorization.split(' ');
+        // if (!verifyJWT(token)) {
+        //     return sendResponse(res, 401, {
+        //         message: 'Invalid token',
+        //     });
+        // }
 
         if (urlPath === '/data') {
             switch (method) {
@@ -67,7 +87,7 @@ const server = http.createServer(async (req, res) => {
         } else if (urlPath === '/file') {
             switch (method) {
                 case METHODS.POST:
-                    return handleFileUpwnload(req, res);
+                    return handleFileUpload(req, res);
                 default:
                     return sendResponse(res, 405, {
                         message: `Method '${method}' is not allowed`,
@@ -110,7 +130,7 @@ function handleLogin(req, res) {
 }
 
 function handleGetData(res) {
-    return sendResponse(res, 200, data);
+    return sendResponse(res, 200, data.users);
 }
 
 function handleCreateData(req, res) {
@@ -123,7 +143,7 @@ function handleCreateData(req, res) {
     req.on('end', () => {
         const newData = JSON.parse(body);
         newData.id = Date.now();
-        data.push(newData);
+        data.users.push(newData);
         return sendResponse(res, 201, newData);
     });
 }
@@ -137,10 +157,10 @@ function handleUpdateData(req, res) {
 
     req.on('end', () => {
         const updatedData = JSON.parse(body);
-        const dataIndex = data.findIndex((item) => item.id === updatedData.id);
+        const dataIndex = data.users.findIndex((item) => item.id === updatedData.id);
 
         if (dataIndex !== -1) {
-            data[dataIndex] = updatedData;
+            data.users[dataIndex] = updatedData;
             return sendResponse(res, 200, updatedData);
         } else {
             return sendResponse(res, 404, {
@@ -158,10 +178,10 @@ function handleDeleteData(query, res) {
         });
     }
 
-    const dataIndex = data.findIndex((item) => item.id == id);
+    const dataIndex = data.users.findIndex((item) => item.id == id);
 
     if (dataIndex !== -1) {
-        data.splice(dataIndex, 1);
+        data.users.splice(dataIndex, 1);
         return sendResponse(res, 200, {
             message: 'OK',
         });
@@ -179,20 +199,27 @@ function handlePageNotFound(res) {
 }
 
 function handleFileDownload(urlPath, res) {
-    const filePath = path.join(__dirname, urlPath);
+    const [, fileId] = /^\/file\/(\d+)$/.exec(urlPath) || [];
+    if (!fileId) {
+        return sendResponse(res, 404, { message: `File id is not provided` });
+    }
 
-    const readStream = fs.createReadStream(filePath);
+    const file = data.files.find((f) => f.id == fileId);
+    if (!file) {
+        return sendResponse(res, 404, { message: `There is no file with '${fileId}' id` });
+    }
+
+    const readStream = fs.createReadStream(file.path);
     readStream.on('error', (error) => {
         return sendResponse(res, 400, {
             message: error,
         });
     });
-
     // res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
     readStream.pipe(res);
 }
 
-function handleFileUpwnload(req, res) {
+function handleFileUpload(req, res) {
     const boundary = req.headers['content-type'].split('; ')[1].split('=')[1];
     let fileBuffer = Buffer.from([]);
 
@@ -210,13 +237,15 @@ function handleFileUpwnload(req, res) {
             const filenameMatch = /filename="([^"]+)"/.exec(fileContent.toString());
             const extension = filenameMatch ? '.' + filenameMatch[1].split('.').pop() : '';
 
-            const filePath = path.join(__dirname, 'file', `${Date.now()}${extension}`);
+            const fileId = Date.now();
+            const filePath = path.join(__dirname, 'files', `${fileId}${extension}`);
 
-            fs.writeFile(filePath, fileContent.toString('base64'), 'base64', (error) => {
+            fs.writeFile(filePath, fileContent, 'binary', (error) => {
                 if (error) {
                     return sendResponse(res, 500, { message: 'Error while saving the file' });
                 } else {
-                    return sendResponse(res, 200, { message: 'File uploaded successfully' });
+                    data.files.push({ id: fileId, path: filePath });
+                    return sendResponse(res, 200, { message: `File uploaded successfully. New file id is '${fileId}'` });
                 }
             });
         } else {
@@ -232,6 +261,10 @@ function sendResponse(res, statusCode, body) {
 
 const port = 3000;
 
-server.listen(port, () => {
-    console.log(`Server running on port ${port}`);
-});
+(async () => {
+    await initFileList();
+
+    server.listen(port, () => {
+        console.log(`Server running on port ${port}`);
+    });
+})();
