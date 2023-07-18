@@ -56,18 +56,18 @@ const server = http.createServer(async (req, res) => {
     if (method === 'post' && urlPath === '/login') {
         return handleLogin(req, res);
     } else {
-        // const authorization = req.headers.authorization;
-        // if (!authorization) {
-        //     return sendResponse(res, 401, {
-        //         message: 'No authorization info',
-        //     });
-        // }
-        // const [, token] = authorization.split(' ');
-        // if (!verifyJWT(token)) {
-        //     return sendResponse(res, 401, {
-        //         message: 'Invalid token',
-        //     });
-        // }
+        const authorization = req.headers.authorization;
+        if (!authorization) {
+            return sendResponse(res, 401, {
+                message: 'No authorization info',
+            });
+        }
+        const [, token] = authorization.split(' ');
+        if (!verifyJWT(token)) {
+            return sendResponse(res, 401, {
+                message: 'Invalid token',
+            });
+        }
 
         if (urlPath === '/data') {
             switch (method) {
